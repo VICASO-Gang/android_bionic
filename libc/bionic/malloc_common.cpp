@@ -355,6 +355,88 @@ static constexpr MallocDispatch __libc_malloc_default_dispatch __attribute__((un
   Malloc(malloc_info),
 };
 
+#if defined(BOTH_JEMALLOC_AND_SCUDO)
+#define ScudoMalloc(function) scudo_ ## function
+static constexpr MallocDispatch __scudo_malloc_dispatch __attribute__((unused)) = {
+  ScudoMalloc(calloc),
+  ScudoMalloc(free),
+  ScudoMalloc(mallinfo),
+  ScudoMalloc(malloc),
+  ScudoMalloc(malloc_usable_size),
+  ScudoMalloc(memalign),
+  ScudoMalloc(posix_memalign),
+#if defined(HAVE_DEPRECATED_MALLOC_FUNCS)
+  ScudoMalloc(pvalloc),
+#endif
+  ScudoMalloc(realloc),
+#if defined(HAVE_DEPRECATED_MALLOC_FUNCS)
+  ScudoMalloc(valloc),
+#endif
+  ScudoMalloc(malloc_iterate),
+  ScudoMalloc(malloc_disable),
+  ScudoMalloc(malloc_enable),
+  ScudoMalloc(mallopt),
+  ScudoMalloc(aligned_alloc),
+  ScudoMalloc(malloc_info),
+};
+
+static const MallocDispatch* native_allocator_dispatch = &__libc_malloc_default_dispatch;
+
+static bool should_use_scudo() {
+  static char exe_path[256];
+  ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (len <= 0) {
+    return false;
+  }
+  exe_path[len] = '\0';
+
+  if (strncmp(exe_path, "/vendor/", 8) == 0
+      || strncmp(exe_path, "/odm/", 5) == 0
+      || strncmp(exe_path, "/vendor_dlkm/", 13) == 0) {
+    return true;
+  }
+
+  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0) {
+    return true;
+  }
+
+  if (strncmp(exe_path, "/apex/", 6) == 0) {
+    return true;
+  }
+
+  return false;
+}
+
+void InitNativeAllocatorDispatch(libc_globals* globals) {
+  bool use_jemalloc = true;
+
+  if (should_use_scudo()) {
+    use_jemalloc = false;
+  }
+
+  if (globals->flags & GLOBAL_FLAG_USE_SCUDO) {
+    use_jemalloc = false;
+  }
+
+  if (getenv("USE_SCUDO_ALLOCATOR") != nullptr) {
+    use_jemalloc = false;
+  }
+
+  if (!use_jemalloc) {
+    globals->malloc_dispatch_table = __scudo_malloc_dispatch;
+    atomic_store_explicit(&globals->current_dispatch_table, &globals->malloc_dispatch_table,
+                          memory_order_release);
+    atomic_store_explicit(&globals->default_dispatch_table, &globals->malloc_dispatch_table,
+                          memory_order_release);
+    native_allocator_dispatch = &__scudo_malloc_dispatch;
+  }
+}
+#endif
+
 const MallocDispatch* NativeAllocatorDispatch() {
+#if defined(BOTH_JEMALLOC_AND_SCUDO)
+  return native_allocator_dispatch;
+#else
   return &__libc_malloc_default_dispatch;
+#endif
 }

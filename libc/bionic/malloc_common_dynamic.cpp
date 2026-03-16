@@ -379,6 +379,10 @@ static void MallocInitImpl(libc_globals* globals) {
   char prop[PROP_VALUE_MAX];
   char* options = prop;
 
+#if defined(BOTH_JEMALLOC_AND_SCUDO)
+  InitNativeAllocatorDispatch(globals);
+#endif
+
   MaybeInitGwpAsanFromLibc(globals);
 
 #if defined(USE_SCUDO) && !__has_feature(hwaddress_sanitizer)

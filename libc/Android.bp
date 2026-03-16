@@ -191,42 +191,11 @@ cc_defaults {
     name: "libc_native_allocator_defaults",
 
     whole_static_libs: [
+        "libjemalloc5",
+        "libc_jemalloc_wrapper",
         "libscudo",
     ],
-    cflags: [
-        "-DUSE_SCUDO",
-    ],
     header_libs: ["gwp_asan_headers"],
-    multilib: {
-        lib64: {
-            product_variables: {
-                malloc_low_memory: {
-                    cflags: ["-UUSE_SCUDO"],
-                    whole_static_libs: [
-                        "libjemalloc5",
-                        "libc_jemalloc_wrapper",
-                    ],
-                    exclude_static_libs: [
-                        "libscudo",
-                    ],
-                },
-            },
-        },
-        lib32: {
-            product_variables: {
-                malloc_low_memory_libc32: {
-                    cflags: ["-UUSE_SCUDO"],
-                    whole_static_libs: [
-                        "libjemalloc5",
-                        "libc_jemalloc_wrapper",
-                    ],
-                    exclude_static_libs: [
-                        "libscudo",
-                    ],
-                },
-            },
-        }
-    },
 }
 
 // Functions not implemented by jemalloc directly, or that need to

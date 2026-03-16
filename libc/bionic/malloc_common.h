@@ -55,22 +55,15 @@ __END_DECLS
 
 #else // __has_feature(hwaddress_sanitizer)
 
-#if defined(USE_SCUDO)
-
-#include "scudo.h"
-#define Malloc(function)  scudo_ ## function
-
-#elif defined(USE_SCUDO_SVELTE)
-
-#include "scudo.h"
-#define Malloc(function)  scudo_svelte_ ## function
-
-#else
-
 #include "jemalloc.h"
 #define Malloc(function)  je_ ## function
 
+#if defined(USE_SCUDO)
+#include "scudo.h"
+void InitNativeAllocatorDispatch(libc_globals* globals);
 #endif
+
+#define BOTH_JEMALLOC_AND_SCUDO
 
 #endif
 
