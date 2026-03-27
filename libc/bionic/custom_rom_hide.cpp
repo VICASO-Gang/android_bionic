@@ -69,11 +69,6 @@ static const char* const kBlockedExactPaths[] = {
     nullptr
 };
 
-static const PrefixEntry kBlockedPrefixes[] = {
-    PE("/data/adb/"),
-    {nullptr, 0}
-};
-
 static const char* const kBlockedDirnames[] = {
     "addon.d",
     "init.d",
@@ -158,7 +153,6 @@ static bool is_blocked_package_path(const char* path) {
 static const char* const kProcFilterKeywords[] = {
     "magisk",
     "zygisk",
-    "/data/adb",
     "/debug_ramdisk",
     "lineage",
     "Lineage",
@@ -172,7 +166,6 @@ static const char* const kMountFilterKeywords[] = {
     "magisk",
     "KSU",
     "APatch",
-    "/data/adb",
     "/debug_ramdisk",
     "overlay",
     nullptr
@@ -210,12 +203,38 @@ static inline int raw_memfd_create(const char* name, unsigned int flags) {
 }
 
 
+static const char* const kRootAppHotwords[] = {
+    "magisk",
+    "kernelsu",
+    "ksu",
+    "apatch",
+    "supersu",
+    "superuser",
+    "lsposed",
+    "xposed",
+    nullptr
+};
+
+static bool is_root_app_process() {
+    int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) return false;
+    char cmdline[256];
+    ssize_t n = raw_read(fd, cmdline, sizeof(cmdline) - 1);
+    raw_close(fd);
+    if (n <= 0) return false;
+    cmdline[n] = '\0';
+    for (const char* const* kw = kRootAppHotwords; *kw; ++kw) {
+        if (strstr(cmdline, *kw) != nullptr) return true;
+    }
+    return false;
+}
+
 static bool is_allowed() {
     if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return true;
     if (g_resolved) return g_allowed;
     g_resolved = true;
-    g_allowed = false;
-    return false;
+    g_allowed = is_root_app_process();
+    return g_allowed;
 }
 
 static const char* path_basename(const char* path) {
@@ -266,10 +285,6 @@ static bool is_root_path(const char* path) {
         while (len > 1 && stack_buf[len - 1] == '/') len--;
         stack_buf[len] = '\0';
         clean = stack_buf;
-    }
-
-    for (const PrefixEntry* p = kBlockedPrefixes; p->str; ++p) {
-        if (strncmp(clean, p->str, p->len) == 0) return true;
     }
 
     for (const char* const* p = kBlockedExactPaths; *p; ++p) {
