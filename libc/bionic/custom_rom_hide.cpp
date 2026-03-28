@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 AxionOS
+ * Copyright (C) 2025-2026 AxionOS
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,55 +19,18 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/memfd.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <private/android_filesystem_config.h>
+
 struct PrefixEntry {
     const char* str;
     size_t len;
 };
 #define PE(s) { s, sizeof(s) - 1 }
-
-static const char* const kBlockedBasenames[] = {
-    "su", "daemonsu", "su-backup", ".su",
-    "magisk", "magiskhide", "magiskpolicy", "magiskinit", "magiskboot",
-    "busybox", "supolicy", "mu",
-    "ksud", "apd",
-    nullptr
-};
-
-static const char* const kBinaryDirs[] = {
-    "/system/bin", "/system/xbin", "/sbin",
-    "/su/bin", "/su/xbin",
-    "/system/bin/failsafe", "/system/bin/.ext",
-    "/system/sd/xbin", "/system/usr/we-need-root",
-    "/data/local/bin", "/data/local/xbin", "/data/local",
-    nullptr
-};
-
-static const char* const kBlockedExactPaths[] = {
-    "/su",
-    "/su/bin",
-    "/su/xbin",
-    "/system/bin/.ext",
-    "/system/app/Superuser.apk",
-    "/system/app/SuperSU.apk",
-    "/system/app/SuperSU",
-    "/system/etc/.installed_su_daemon",
-    "/system/etc/.has_su_daemon",
-    "/system/etc/init.d/99telesu",
-    "/system/bin/install-recovery.sh",
-    "/dev/magisk",
-    "/cache/magisk.log",
-    "/data/cache/magisk.log",
-    "/sbin/recovery",
-    "/tmp/recovery.log",
-    nullptr
-};
 
 static const char* const kBlockedDirnames[] = {
     "addon.d",
@@ -85,75 +48,19 @@ static const char* const kDirParents[] = {
     nullptr
 };
 
+static const char* const kBlockedExactPaths[] = {
+    "/system/bin/install-recovery.sh",
+    "/sbin/recovery",
+    "/tmp/recovery.log",
+    nullptr
+};
+
 static const PrefixEntry kRecoveryPrefixes[] = {
     PE("/cache/recovery/"),
     {nullptr, 0}
 };
 
-static const char* const kBlockedPackages[] = {
-    "com.topjohnwu.magisk",
-    "eu.chainfire.supersu",
-    "com.koushikdutta.superuser",
-    "com.noshufou.android.su",
-    "com.noshufou.android.su.elite",
-    "com.thirdparty.superuser",
-    "com.yellowes.su",
-    "me.weishu.kernelsu",
-    "com.kingroot.kinguser",
-    "com.kingo.root",
-    "com.smedialink.oneclickroot",
-    "com.zhiqupk.root.global",
-    "com.alephzain.framaroot",
-    "com.devadvance.rootcloak",
-    "com.devadvance.rootcloakplus",
-    "de.robv.android.xposed.installer",
-    "com.saurik.substrate",
-    "com.amphoras.hidemyroot",
-    "com.amphoras.hidemyrootadfree",
-    "com.formyhm.hiderootPremium",
-    "com.formyhm.hideroot",
-    "com.koushikdutta.rommanager",
-    "com.koushikdutta.rommanager.license",
-    "com.dimonvideo.luckypatcher",
-    "com.chelpus.lackypatch",
-    "com.chelpus.luckypatcher",
-    "com.solohsu.android.edxp.manager",
-    "org.meowcat.edxposed.manager",
-    "org.lsposed.manager",
-    "cc.madkite.freedom",
-    "com.ramdroid.appquarantine",
-    "com.ramdroid.appquarantinepro",
-    "com.zachspong.temprootremovejb",
-    nullptr
-};
-
-static const char* const kDataDirPrefixes[] = {
-    "/data/data/",
-    "/data/user/0/",
-    "/data/user_de/0/",
-    nullptr
-};
-
-static bool is_blocked_package_path(const char* path) {
-    for (const char* const* prefix = kDataDirPrefixes; *prefix; ++prefix) {
-        size_t plen = strlen(*prefix);
-        if (strncmp(path, *prefix, plen) != 0) continue;
-        const char* remainder = path + plen;
-        for (const char* const* pkg = kBlockedPackages; *pkg; ++pkg) {
-            size_t pkglen = strlen(*pkg);
-            if (strncmp(remainder, *pkg, pkglen) == 0 &&
-                (remainder[pkglen] == '\0' || remainder[pkglen] == '/')) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 static const char* const kProcFilterKeywords[] = {
-    "magisk",
-    "zygisk",
-    "/debug_ramdisk",
     "lineage",
     "Lineage",
     "axion",
@@ -163,16 +70,10 @@ static const char* const kProcFilterKeywords[] = {
 };
 
 static const char* const kMountFilterKeywords[] = {
-    "magisk",
-    "KSU",
-    "APatch",
     "/debug_ramdisk",
     "overlay",
     nullptr
 };
-
-static bool g_resolved = false;
-static bool g_allowed = false;
 
 static inline int raw_openat(const char* path, int flags) {
     return static_cast<int>(syscall(__NR_openat, AT_FDCWD, path, flags, 0));
@@ -190,10 +91,6 @@ static inline int raw_close(int fd) {
     return static_cast<int>(syscall(__NR_close, fd));
 }
 
-static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
-    return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
-}
-
 static inline off_t raw_lseek(int fd, off_t offset, int whence) {
     return syscall(__NR_lseek, fd, offset, whence);
 }
@@ -202,39 +99,12 @@ static inline int raw_memfd_create(const char* name, unsigned int flags) {
     return static_cast<int>(syscall(__NR_memfd_create, name, flags));
 }
 
-
-static const char* const kRootAppHotwords[] = {
-    "magisk",
-    "kernelsu",
-    "ksu",
-    "apatch",
-    "supersu",
-    "superuser",
-    "lsposed",
-    "xposed",
-    nullptr
-};
-
-static bool is_root_app_process() {
-    int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
-    if (fd < 0) return false;
-    char cmdline[256];
-    ssize_t n = raw_read(fd, cmdline, sizeof(cmdline) - 1);
-    raw_close(fd);
-    if (n <= 0) return false;
-    cmdline[n] = '\0';
-    for (const char* const* kw = kRootAppHotwords; *kw; ++kw) {
-        if (strstr(cmdline, *kw) != nullptr) return true;
-    }
-    return false;
+static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
+    return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
 }
 
-static bool is_allowed() {
-    if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return true;
-    if (g_resolved) return g_allowed;
-    g_resolved = true;
-    g_allowed = is_root_app_process();
-    return g_allowed;
+static bool is_app_process() {
+    return (getuid() % AID_USER_OFFSET) >= AID_APP_START;
 }
 
 static const char* path_basename(const char* path) {
@@ -242,22 +112,10 @@ static const char* path_basename(const char* path) {
     return slash ? slash + 1 : path;
 }
 
-
 static bool path_parent_equals(const char* path, const char* parent) {
     size_t plen = strlen(parent);
     if (strncmp(path, parent, plen) != 0) return false;
     return path[plen] == '/';
-}
-
-static bool is_blocked_binary(const char* path) {
-    const char* base = path_basename(path);
-    for (const char* const* b = kBlockedBasenames; *b; ++b) {
-        if (strcmp(base, *b) != 0) continue;
-        for (const char* const* d = kBinaryDirs; *d; ++d) {
-            if (path_parent_equals(path, *d)) return true;
-        }
-    }
-    return false;
 }
 
 static bool is_blocked_dir(const char* path) {
@@ -271,8 +129,7 @@ static bool is_blocked_dir(const char* path) {
     return false;
 }
 
-
-static bool is_root_path(const char* path) {
+static bool is_rom_path(const char* path) {
     if (!path || path[0] != '/') return false;
 
     size_t len = strlen(path);
@@ -295,9 +152,7 @@ static bool is_root_path(const char* path) {
         if (strncmp(clean, p->str, p->len) == 0) return true;
     }
 
-    if (is_blocked_binary(clean)) return true;
     if (is_blocked_dir(clean)) return true;
-    if (is_blocked_package_path(clean)) return true;
 
     return false;
 }
@@ -313,16 +168,10 @@ static bool resolve_fd_path(int fd, char* buf, size_t size) {
     return false;
 }
 
-static bool could_be_blocked_path(const char* path) {
-    if (!path || path[0] != '/') return false;
-    char c = path[1];
-    return c == 's' || c == 'd' || c == 'c' || c == 't' || c == 'p' || c == 'S';
-}
-
 bool custom_rom_hide_should_block(const char* path) {
-    if (!could_be_blocked_path(path)) return false;
-    if (is_allowed()) return false;
-    return is_root_path(path);
+    if (!path || path[0] != '/') return false;
+    if (!is_app_process()) return false;
+    return is_rom_path(path);
 }
 
 bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
@@ -343,18 +192,10 @@ bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
 }
 
 bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
-    if (!name || is_allowed()) return false;
+    if (!name || !is_app_process()) return false;
 
     char dir_path[256];
     if (!resolve_fd_path(dirfd, dir_path, sizeof(dir_path))) return false;
-
-    for (const char* const* d = kBinaryDirs; *d; ++d) {
-        if (strcmp(dir_path, *d) != 0) continue;
-        for (const char* const* b = kBlockedBasenames; *b; ++b) {
-            if (strcmp(name, *b) == 0) return true;
-        }
-        return false;
-    }
 
     for (const char* const* pp = kDirParents; *pp; ++pp) {
         if (strcmp(dir_path, *pp) != 0) continue;
@@ -372,7 +213,6 @@ enum ProcFilterType {
     PROC_FILTER_MAPS,
     PROC_FILTER_MOUNTS,
     PROC_FILTER_MOUNTINFO,
-    PROC_FILTER_UNIX,
     PROC_FILTER_FILESYSTEMS,
 };
 
@@ -388,8 +228,6 @@ static ProcFilterType get_proc_filter_type(const char* path) {
         leaf = path + 11;
     } else if (strncmp(path, pid_path, strlen(pid_path)) == 0) {
         leaf = path + strlen(pid_path);
-    } else if (strcmp(path, "/proc/net/unix") == 0) {
-        return PROC_FILTER_UNIX;
     } else if (strcmp(path, "/proc/filesystems") == 0) {
         return PROC_FILTER_FILESYSTEMS;
     } else if (strcmp(path, "/proc/1/mountinfo") == 0) {
@@ -412,39 +250,17 @@ static bool line_contains_any(const char* line, const char* const* keywords) {
     return false;
 }
 
-static bool is_magisk_unix_socket(const char* line) {
-    const char* at = strrchr(line, '@');
-    if (!at) return false;
-
-    const char* name = at + 1;
-    size_t len = strlen(name);
-    if (len > 0 && name[len - 1] == '\n') len--;
-    if (len < 32) return false;
-
-    for (size_t i = 0; i < len; i++) {
-        char c = name[i];
-        bool is_alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9');
-        if (!is_alnum) return false;
-    }
-    return true;
-}
-
 static bool should_filter_line(ProcFilterType type, const char* line) {
     switch (type) {
         case PROC_FILTER_MAPS:
             return line_contains_any(line, kProcFilterKeywords);
         case PROC_FILTER_MOUNTS:
             if (line_contains_any(line, kMountFilterKeywords)) return true;
-            if (strstr(line, "tmpfs") && strstr(line, "/sbin")) return true;
             return false;
         case PROC_FILTER_MOUNTINFO:
             return line_contains_any(line, kMountFilterKeywords);
-        case PROC_FILTER_UNIX:
-            return is_magisk_unix_socket(line);
         case PROC_FILTER_FILESYSTEMS:
-            return strstr(line, "overlay") != nullptr
-                || strstr(line, "fuse") != nullptr;
+            return strstr(line, "overlay") != nullptr;
         default:
             return false;
     }
@@ -483,17 +299,12 @@ static char* read_file_raw(const char* path, size_t* out_size) {
     return buf;
 }
 
-int custom_rom_hide_filter_proc(const char* path) {
-    if (is_allowed()) return -1;
-
-    ProcFilterType type = get_proc_filter_type(path);
-    if (type == PROC_FILTER_NONE) return -1;
-
+static int filter_file_lines(const char* path, ProcFilterType type) {
     size_t file_size = 0;
     char* content = read_file_raw(path, &file_size);
     if (!content) return -1;
 
-    int mem_fd = raw_memfd_create("proc", 0);
+    int mem_fd = raw_memfd_create("filtered", 0);
     if (mem_fd < 0) {
         free(content);
         return -1;
@@ -523,6 +334,15 @@ int custom_rom_hide_filter_proc(const char* path) {
     free(content);
     raw_lseek(mem_fd, 0, SEEK_SET);
     return mem_fd;
+}
+
+int custom_rom_hide_filter_proc(const char* path) {
+    if (!is_app_process()) return -1;
+
+    ProcFilterType type = get_proc_filter_type(path);
+    if (type == PROC_FILTER_NONE) return -1;
+
+    return filter_file_lines(path, type);
 }
 
 static const char* const kSepolicyFilterPaths[] = {
@@ -557,7 +377,7 @@ static bool is_sepolicy_context_file(const char* path) {
 }
 
 int custom_rom_hide_filter_sepolicy(const char* path) {
-    if (is_allowed()) return -1;
+    if (!is_app_process()) return -1;
     if (!is_sepolicy_context_file(path)) return -1;
 
     size_t file_size = 0;
@@ -605,8 +425,6 @@ static const char* const kSpoofedEmptyProps[] = {
     "ro.lineage.build.version",
     "ro.cm.build.version",
     "ro.modversion",
-    "init.svc.magisk_daemon",
-    "persist.magisk.hide",
     "service.adb.root",
     nullptr
 };
@@ -625,7 +443,7 @@ static const PropOverride kSpoofedValueProps[] = {
 };
 
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
-    if (!name || is_allowed()) return false;
+    if (!name || !is_app_process()) return false;
 
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) {
@@ -645,7 +463,7 @@ bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
 }
 
 bool custom_rom_hide_should_hide_prop(const char* name) {
-    if (!name || is_allowed()) return false;
+    if (!name || !is_app_process()) return false;
 
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) return true;
@@ -654,7 +472,7 @@ bool custom_rom_hide_should_hide_prop(const char* name) {
 }
 
 const char* custom_rom_hide_get_prop_override(const char* name) {
-    if (!name || is_allowed()) return nullptr;
+    if (!name || !is_app_process()) return nullptr;
 
     for (const PropOverride* o = kSpoofedValueProps; o->name; ++o) {
         if (strcmp(name, o->name) == 0) return o->value;
