@@ -426,6 +426,7 @@ static const char* const kSpoofedEmptyProps[] = {
     "ro.cm.build.version",
     "ro.modversion",
     "service.adb.root",
+    "init.svc.adb_root",
     nullptr
 };
 
