@@ -425,8 +425,8 @@ static const char* const kSpoofedEmptyProps[] = {
     "ro.lineage.build.version",
     "ro.cm.build.version",
     "ro.modversion",
-    "service.adb.root",
-    "init.svc.adb_root",
+    "init.svc_debug_pid.adb_root",
+    "init.svc_debug_pid.adbd",
     nullptr
 };
 
@@ -438,8 +438,13 @@ struct PropOverride {
 static const PropOverride kSpoofedValueProps[] = {
     {"ro.debuggable", "0"},
     {"ro.build.type", "user"},
+    {"ro.secure", "1"},
     {"ro.adb.secure", "1"},
     {"persist.sys.usb.config", "mtp"},
+    {"service.adb.root", "0"},
+    {"init.svc.adb_root", "stopped"},
+    {"init.svc.adbd", "stopped"},
+    {"sys.usb.config", "mtp"},
     {nullptr, nullptr}
 };
 
