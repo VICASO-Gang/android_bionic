@@ -429,6 +429,7 @@ static const char* const kSpoofedEmptyProps[] = {
     "init.svc_debug_pid.adbd",
     "init.svc.adb_root",
     "init.svc.adbd",
+    "service.adb.root",
     nullptr
 };
 
@@ -443,7 +444,6 @@ static const PropOverride kSpoofedValueProps[] = {
     {"ro.secure", "1"},
     {"ro.adb.secure", "1"},
     {"persist.sys.usb.config", "mtp"},
-    {"service.adb.root", "0"},
     {"sys.usb.config", "mtp"},
     {nullptr, nullptr}
 };
