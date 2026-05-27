@@ -478,6 +478,7 @@ struct PropOverride {
 static const PropOverride kSpoofedValueProps[] = {
     {"ro.debuggable", "0"},
     {"ro.build.type", "user"},
+    {"ro.build.tags", "release-keys"},
     {"ro.secure", "1"},
     {"ro.adb.secure", "1"},
     {"persist.sys.usb.config", "mtp"},
