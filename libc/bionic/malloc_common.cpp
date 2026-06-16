@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <platform/bionic/malloc.h>
 #include <private/ScopedPthreadMutexLocker.h>
@@ -382,6 +383,21 @@ static constexpr MallocDispatch __scudo_malloc_dispatch __attribute__((unused)) 
 
 static const MallocDispatch* native_allocator_dispatch = &__libc_malloc_default_dispatch;
 
+static bool should_use_jemalloc_for_display(const char* exe_path) {
+  if (strncmp(exe_path, "/vendor/bin/hw/", sizeof("/vendor/bin/hw/") - 1) != 0
+      && strncmp(exe_path, "/odm/bin/hw/", sizeof("/odm/bin/hw/") - 1) != 0) {
+    return false;
+  }
+
+  return strstr(exe_path, "graphics.allocator") != nullptr
+      || strstr(exe_path, "graphics.composer") != nullptr
+      || strstr(exe_path, "hardware.composer.hwc") != nullptr
+      || strstr(exe_path, "hardware.display.allocator") != nullptr
+      || strstr(exe_path, "hardware.display.composer") != nullptr
+      || strstr(exe_path, "hwcomposer") != nullptr
+      || strstr(exe_path, "gralloc") != nullptr;
+}
+
 static bool should_use_scudo() {
   static char exe_path[256];
   ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
@@ -390,13 +406,14 @@ static bool should_use_scudo() {
   }
   exe_path[len] = '\0';
 
+  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0
+      || should_use_jemalloc_for_display(exe_path)) {
+    return false;
+  }
+
   if (strncmp(exe_path, "/vendor/", 8) == 0
       || strncmp(exe_path, "/odm/", 5) == 0
       || strncmp(exe_path, "/vendor_dlkm/", 13) == 0) {
-    return true;
-  }
-
-  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0) {
     return true;
   }
 
