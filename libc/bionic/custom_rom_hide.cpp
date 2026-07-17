@@ -414,6 +414,7 @@ static bool is_sepolicy_context_file(const char* path) {
 }
 
 int custom_rom_hide_filter_sepolicy(const char* path) {
+    if (!path) return -1;
     if (!is_app_process()) return -1;
     if (!is_sepolicy_context_file(path)) return -1;
 
