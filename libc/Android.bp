@@ -50,9 +50,38 @@ libc_common_flags = [
 
 // Define some common cflags
 // ========================================================
+soong_config_string_variable {
+    name: "use_jemalloc_for_display_stack",
+    values: ["false"],
+}
+
+soong_config_module_type {
+    name: "display_jemalloc_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "BIONIC",
+    variables: ["use_jemalloc_for_display_stack"],
+    properties: ["cflags"],
+}
+
+display_jemalloc_cc_defaults {
+    name: "display_jemalloc_defaults",
+    cflags: ["-DDISPLAY_STACK_USE_JEMALLOC"],
+    soong_config_variables: {
+        use_jemalloc_for_display_stack: {
+            false: {
+                cflags: ["-UDISPLAY_STACK_USE_JEMALLOC"],
+            },
+            conditions_default: {},
+        },
+    },
+}
+
 cc_defaults {
     name: "libc_defaults",
-    defaults: ["linux_bionic_supported"],
+    defaults: [
+        "linux_bionic_supported",
+        "display_jemalloc_defaults",
+    ],
     cflags: libc_common_flags + [
         "-DUSE_SCUDO",
     ],
