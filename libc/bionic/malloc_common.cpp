@@ -383,7 +383,7 @@ static constexpr MallocDispatch __scudo_malloc_dispatch __attribute__((unused)) 
 
 static const MallocDispatch* native_allocator_dispatch = &__libc_malloc_default_dispatch;
 
-static bool should_use_jemalloc_for_display(const char* exe_path) {
+static bool __attribute__((unused)) should_use_jemalloc_for_display(const char* exe_path) {
 #if defined(DISPLAY_STACK_USE_JEMALLOC)
   if (strncmp(exe_path, "/vendor/bin/hw/", sizeof("/vendor/bin/hw/") - 1) != 0
       && strncmp(exe_path, "/odm/bin/hw/", sizeof("/odm/bin/hw/") - 1) != 0) {
