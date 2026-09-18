@@ -383,8 +383,8 @@ static constexpr MallocDispatch __scudo_malloc_dispatch __attribute__((unused)) 
 
 static const MallocDispatch* native_allocator_dispatch = &__libc_malloc_default_dispatch;
 
-static bool __attribute__((unused)) should_use_jemalloc_for_display(const char* exe_path) {
 #if defined(DISPLAY_STACK_USE_JEMALLOC)
+static bool should_use_jemalloc_for_display(const char* exe_path) {
   if (strncmp(exe_path, "/vendor/bin/hw/", sizeof("/vendor/bin/hw/") - 1) != 0
       && strncmp(exe_path, "/odm/bin/hw/", sizeof("/odm/bin/hw/") - 1) != 0) {
     return false;
@@ -397,11 +397,8 @@ static bool __attribute__((unused)) should_use_jemalloc_for_display(const char* 
       || strstr(exe_path, "hardware.display.composer") != nullptr
       || strstr(exe_path, "hwcomposer") != nullptr
       || strstr(exe_path, "gralloc") != nullptr;
-#else
-  (void)exe_path;
-  return false;
-#endif
 }
+#endif
 
 static bool should_use_scudo() {
   static char exe_path[256];
@@ -411,12 +408,14 @@ static bool should_use_scudo() {
   }
   exe_path[len] = '\0';
 
-  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0) {
+#if defined(DISPLAY_STACK_USE_JEMALLOC)
+  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0
+      || should_use_jemalloc_for_display(exe_path)) {
     return false;
   }
-#if defined(DISPLAY_STACK_USE_JEMALLOC)
-  if (should_use_jemalloc_for_display(exe_path)) {
-    return false;
+#else
+  if (strcmp(exe_path, "/system/bin/surfaceflinger") == 0) {
+    return true;
   }
 #endif
 
