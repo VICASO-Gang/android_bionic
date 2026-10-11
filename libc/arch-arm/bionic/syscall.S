@@ -27,8 +27,10 @@
  */
 
 #include <private/bionic_asm.h>
+#include <sys/syscall.h>
 
-ENTRY(syscall)
+ENTRY(__raw_syscall)
+.Lraw_syscall:
     mov     ip, sp
     stmfd   sp!, {r4, r5, r6, r7}
     .cfi_def_cfa_offset 16
@@ -48,4 +50,32 @@ ENTRY(syscall)
     bxls    lr
     neg     r0, r0
     b       __set_errno_internal
+END(__raw_syscall)
+
+ENTRY(syscall)
+    ldr     ip, =__NR_openat
+    cmp     r0, ip
+    beq     .Lhandle_openat
+    b       .Lraw_syscall
+
+.Lhandle_openat:
+    push    {r0, r1, r2, r3, r4, lr}
+    ldr     r0, [sp, #4]
+    ldr     r1, [sp, #8]
+    bl      custom_rom_hide_syscall_openat
+    cmp     r0, #0
+    bge     .Lopenat_done
+    cmn     r0, #2
+    bne     .Lopenat_fallback
+    mvn     r0, #0
+    b       .Lopenat_done
+
+.Lopenat_fallback:
+    pop     {r0, r1, r2, r3, r4, lr}
+    b       .Lraw_syscall
+
+.Lopenat_done:
+    add     sp, sp, #20
+    pop     {lr}
+    bx      lr
 END(syscall)

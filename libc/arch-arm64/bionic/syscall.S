@@ -27,8 +27,10 @@
  */
 
 #include <private/bionic_asm.h>
+#include <sys/syscall.h>
 
-ENTRY(syscall)
+ENTRY(__raw_syscall)
+.Lraw_syscall:
     /* Move syscall No. from x0 to x8 */
     mov     x8, x0
     /* Move syscall parameters from x1 thru x6 to x0 thru x5 */
@@ -45,6 +47,54 @@ ENTRY(syscall)
     cneg    x0, x0, hi
     b.hi    __set_errno_internal
 
+    ret
+END(__raw_syscall)
+
+ENTRY(syscall)
+    cmp     x0, #__NR_openat
+    b.eq    .Lhandle_openat
+    b       .Lraw_syscall
+
+.Lhandle_openat:
+    stp     x29, x30, [sp, #-80]!
+    .cfi_def_cfa_offset 80
+    .cfi_offset 29, -80
+    .cfi_offset 30, -72
+    mov     x29, sp
+
+    stp     x0, x1, [sp, #16]
+    stp     x2, x3, [sp, #32]
+    stp     x4, x5, [sp, #48]
+    str     x6,     [sp, #64]
+
+    mov     x0, x1
+    mov     x1, x2
+    bl      custom_rom_hide_syscall_openat
+
+    cmp     x0, #0
+    b.ge    .Lopenat_done
+
+    cmn     x0, #2
+    b.ne    .Lopenat_fallback
+    mov     x0, #-1
+    b       .Lopenat_done
+
+.Lopenat_fallback:
+    ldp     x0, x1, [sp, #16]
+    ldp     x2, x3, [sp, #32]
+    ldp     x4, x5, [sp, #48]
+    ldr     x6,     [sp, #64]
+    ldp     x29, x30, [sp], #80
+    .cfi_def_cfa_offset 0
+    .cfi_restore 29
+    .cfi_restore 30
+    b       .Lraw_syscall
+
+.Lopenat_done:
+    ldp     x29, x30, [sp], #80
+    .cfi_def_cfa_offset 0
+    .cfi_restore 29
+    .cfi_restore 30
     ret
 END(syscall)
 

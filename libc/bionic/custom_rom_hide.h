@@ -17,9 +17,12 @@
 #pragma once
 
 #include <sys/cdefs.h>
+#include <sys/types.h>
 #include <stdbool.h>
 
 __BEGIN_DECLS
+
+int custom_rom_hide_syscall_openat(int dirfd, const char* path);
 
 bool custom_rom_hide_should_block(const char* path);
 bool custom_rom_hide_should_block_at(int dirfd, const char* path);
@@ -29,6 +32,8 @@ int custom_rom_hide_filter_sepolicy(const char* path);
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value);
 bool custom_rom_hide_should_hide_prop(const char* name);
 const char* custom_rom_hide_get_prop_override(const char* name);
-bool custom_rom_hide_should_block_exec(const char* name, char* const* argv);
+struct statfs;
+void custom_rom_hide_spoof_statfs(const char* path, struct statfs* result);
+void custom_rom_hide_spoof_fstatfs(int fd, struct statfs* result);
 
 __END_DECLS

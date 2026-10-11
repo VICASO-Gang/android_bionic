@@ -18,11 +18,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/magic.h>
 #include <linux/memfd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <private/android_filesystem_config.h>
 
@@ -39,6 +42,60 @@ static const char* const kBlockedDirnames[] = {
     nullptr
 };
 
+static const char* const kSystemPartitions[] = {
+    "/system",
+    "/vendor",
+    "/product",
+    "/system_ext",
+    "/odm",
+    "/vendor_dlkm",
+    nullptr
+};
+
+static const char* const kFilterDirentAppNames[] = {
+    "LineageParts",
+    "LineageSettingsProvider",
+    "FaceUnlock",
+    "AxionParts",
+    "AxionWidgets",
+    "AxSandbox",
+    "AxDiagnostics",
+    "ColumbusService",
+    "GameSpace",
+    "OmniJaws",
+    nullptr
+};
+
+static const char* const kFilterDirentOverlayKeywords[] = {
+    "lineage",
+    "Lineage",
+    "axion",
+    "Axion",
+    "Omni",
+    "omni",
+    nullptr
+};
+
+static const char* const kUntrustedContextPrefixes[] = {
+    "u:r:untrusted_app",
+    "u:r:isolated_app",
+    "u:r:ephemeral_app",
+    nullptr
+};
+
+static inline bool starts_with(const char* str, const char* prefix) {
+    if (!str || !prefix) return false;
+    return strncmp(str, prefix, strlen(prefix)) == 0;
+}
+
+static inline bool ends_with(const char* str, const char* suffix) {
+    if (!str || !suffix) return false;
+    size_t str_len = strlen(str);
+    size_t suffix_len = strlen(suffix);
+    if (str_len < suffix_len) return false;
+    return strcmp(str + str_len - suffix_len, suffix) == 0;
+}
+
 static const char* const kDirParents[] = {
     "/system", "/system/etc",
     "/system_ext", "/system_ext/etc",
@@ -50,29 +107,21 @@ static const char* const kDirParents[] = {
 
 static const char* const kBlockedExactPaths[] = {
     "/system/bin/install-recovery.sh",
+    "/system/etc/install-recovery.sh",
+    "/vendor/bin/install-recovery.sh",
     "/sbin/recovery",
     "/tmp/recovery.log",
     "/system/bin/backuptool_ab.functions",
     "/system/bin/backuptool_ab.sh",
     "/system/bin/backuptool_postinstall.sh",
     "/data/lineageos_updates",
-    "/system/bin/su",
-    "/system/xbin/su",
-    "/sbin/su",
-    "/su/bin/su",
-    "/system/bin/.ext/su",
-    "/system/bin/failsafe/su",
-    "/system/sd/xbin/su",
-    "/system/usr/we-need-root/su",
-    "/data/local/su",
-    "/data/local/bin/su",
-    "/data/local/xbin/su",
-    "/dev/su",
-    "/system/bin/magisk",
-    "/system/xbin/magisk",
-    "/dev/magisk",
-    "/system/app/Superuser.apk",
-    "/system/app/Superuser",
+    "/system/framework/org.lineageos.platform-res.apk",
+    "/system/framework/oat/arm64/org.lineageos.platform.vdex",
+    "/system/framework/oat/arm64/org.lineageos.platform.odex",
+    "/system/framework/oat/arm/org.lineageos.platform.vdex",
+    "/system/framework/oat/arm/org.lineageos.platform.odex",
+    "/system_ext/framework/org.lineageos.platform.jar",
+    "/dev/__properties__",
     nullptr
 };
 
@@ -87,6 +136,7 @@ static const char* const kProcFilterKeywords[] = {
     "axion",
     "Axion",
     "omnirom",
+    "libstagefright.so",
     nullptr
 };
 
@@ -97,37 +147,37 @@ static const char* const kMountFilterKeywords[] = {
     nullptr
 };
 
+extern "C" long __raw_syscall(long number, ...);
+
 static inline int raw_openat(const char* path, int flags) {
-    return static_cast<int>(syscall(__NR_openat, AT_FDCWD, path, flags, 0));
+    return static_cast<int>(__raw_syscall(__NR_openat, AT_FDCWD, path, flags, 0));
 }
 
 static inline ssize_t raw_read(int fd, void* buf, size_t count) {
-    return syscall(__NR_read, fd, buf, count);
+    return __raw_syscall(__NR_read, fd, buf, count);
 }
 
 static inline ssize_t raw_write(int fd, const void* buf, size_t count) {
-    return syscall(__NR_write, fd, buf, count);
+    return __raw_syscall(__NR_write, fd, buf, count);
 }
 
 static inline int raw_close(int fd) {
-    return static_cast<int>(syscall(__NR_close, fd));
+    return static_cast<int>(__raw_syscall(__NR_close, fd));
 }
 
 static inline off_t raw_lseek(int fd, off_t offset, int whence) {
-    return syscall(__NR_lseek, fd, offset, whence);
+    return __raw_syscall(__NR_lseek, fd, offset, whence);
 }
 
 static inline int raw_memfd_create(const char* name, unsigned int flags) {
-    return static_cast<int>(syscall(__NR_memfd_create, name, flags));
+    return static_cast<int>(__raw_syscall(__NR_memfd_create, name, flags));
 }
 
 static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
-    return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
+    return __raw_syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
 }
 
 static bool is_target_untrusted_app() {
-    if (getuid() == 0) return false;
-
     int fd = raw_openat("/proc/thread-self/attr/current", O_RDONLY);
     if (fd < 0) {
         fd = raw_openat("/proc/self/attr/current", O_RDONLY);
@@ -140,17 +190,10 @@ static bool is_target_untrusted_app() {
     if (n <= 0) return false;
     con[n] = '\0';
 
-    if (strstr(con, ":magisk:") != nullptr ||
-        strstr(con, ":su:") != nullptr ||
-        strstr(con, ":ksu:") != nullptr) {
-        return false;
+    for (const char* const* uc = kUntrustedContextPrefixes; *uc; ++uc) {
+        if (starts_with(con, *uc)) return true;
     }
 
-    if (strncmp(con, "u:r:untrusted_app", 17) == 0 ||
-        strncmp(con, "u:r:isolated_app", 16) == 0 ||
-        strncmp(con, "u:r:ephemeral_app", 17) == 0) {
-        return true;
-    }
     return false;
 }
 
@@ -207,12 +250,10 @@ static bool is_rom_path(const char* path) {
     }
 
     for (const PrefixEntry* p = kRecoveryPrefixes; p->str; ++p) {
-        if (strncmp(clean, p->str, p->len) == 0) return true;
+        if (starts_with(clean, p->str)) return true;
     }
 
-    if (is_blocked_dir(clean)) return true;
-
-    return false;
+    return is_blocked_dir(clean);
 }
 
 static bool resolve_fd_path(int fd, char* buf, size_t size) {
@@ -255,6 +296,18 @@ bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
     char dir_path[256];
     if (!resolve_fd_path(dirfd, dir_path, sizeof(dir_path))) return false;
 
+    if (strstr(dir_path, "/overlay") != nullptr) {
+        for (const char* const* kw = kFilterDirentOverlayKeywords; *kw; ++kw) {
+            if (strstr(name, *kw) != nullptr) return true;
+        }
+    }
+
+    if (strstr(dir_path, "/priv-app") != nullptr || strstr(dir_path, "/app") != nullptr) {
+        for (const char* const* app = kFilterDirentAppNames; *app; ++app) {
+            if (strcmp(name, *app) == 0) return true;
+        }
+    }
+
     for (const char* const* pp = kDirParents; *pp; ++pp) {
         if (strcmp(dir_path, *pp) != 0) continue;
         for (const char* const* dn = kBlockedDirnames; *dn; ++dn) {
@@ -274,29 +327,22 @@ enum ProcFilterType {
     PROC_FILTER_FILESYSTEMS,
 };
 
+static bool is_proc_path_leaf(const char* path, const char* leaf) {
+    if (!ends_with(path, leaf)) return false;
+    size_t path_len = strlen(path);
+    size_t leaf_len = strlen(leaf);
+    if (path_len == leaf_len) return true;
+    return path[path_len - leaf_len - 1] == '/';
+}
+
 static ProcFilterType get_proc_filter_type(const char* path) {
     if (!path) return PROC_FILTER_NONE;
 
-    char pid_path[64];
-    snprintf(pid_path, sizeof(pid_path), "/proc/%d/", static_cast<int>(getpid()));
-
-    const char* leaf = nullptr;
-
-    if (strncmp(path, "/proc/self/", 11) == 0) {
-        leaf = path + 11;
-    } else if (strncmp(path, pid_path, strlen(pid_path)) == 0) {
-        leaf = path + strlen(pid_path);
-    } else if (strcmp(path, "/proc/filesystems") == 0) {
-        return PROC_FILTER_FILESYSTEMS;
-    } else if (strcmp(path, "/proc/1/mountinfo") == 0) {
-        return PROC_FILTER_MOUNTINFO;
-    }
-
-    if (!leaf) return PROC_FILTER_NONE;
-
-    if (strcmp(leaf, "maps") == 0) return PROC_FILTER_MAPS;
-    if (strcmp(leaf, "mounts") == 0) return PROC_FILTER_MOUNTS;
-    if (strcmp(leaf, "mountinfo") == 0) return PROC_FILTER_MOUNTINFO;
+    if (strcmp(path, "/proc/filesystems") == 0) return PROC_FILTER_FILESYSTEMS;
+    if (strcmp(path, "/etc/mtab") == 0) return PROC_FILTER_MOUNTS;
+    if (is_proc_path_leaf(path, "mounts")) return PROC_FILTER_MOUNTS;
+    if (is_proc_path_leaf(path, "mountinfo")) return PROC_FILTER_MOUNTINFO;
+    if (is_proc_path_leaf(path, "maps")) return PROC_FILTER_MAPS;
 
     return PROC_FILTER_NONE;
 }
@@ -359,40 +405,28 @@ static char* read_file_raw(const char* path, size_t* out_size) {
 
 static void sanitize_mount_line(ProcFilterType type, char* line) {
     if (type != PROC_FILTER_MOUNTS && type != PROC_FILTER_MOUNTINFO) return;
-    if (strstr(line, "/system") || strstr(line, "/vendor") || strstr(line, "/product")) {
-        char* p = strstr(line, " rw,");
-        if (p) *(p + 2) = 'o';
-        p = strstr(line, ",rw,");
-        if (p) *(p + 2) = 'o';
-        p = strstr(line, " rw ");
-        if (p) *(p + 2) = 'o';
+
+    bool is_system_part = false;
+    for (const char* const* sp = kSystemPartitions; *sp; ++sp) {
+        if (strstr(line, *sp) != nullptr) {
+            is_system_part = true;
+            break;
+        }
     }
+    if (!is_system_part) return;
+
+    char* p = strstr(line, " rw,");
+    if (p) *(p + 2) = 'o';
+    p = strstr(line, ",rw,");
+    if (p) *(p + 2) = 'o';
+    p = strstr(line, " rw ");
+    if (p) *(p + 2) = 'o';
 }
 
 static int filter_file_lines(const char* path, ProcFilterType type) {
     size_t file_size = 0;
     char* content = read_file_raw(path, &file_size);
     if (!content) return -1;
-
-    char root_dev[128] = "/dev/root";
-    char root_fs[32] = "ext4";
-    if (type == PROC_FILTER_MOUNTS) {
-        char* r = strstr(content, " / ");
-        if (r && r > content) {
-            char* line_start = r;
-            while (line_start > content && *(line_start - 1) != '\n') {
-                line_start--;
-            }
-            char dev[128];
-            char fs[32];
-            if (sscanf(line_start, "%127s / %31s", dev, fs) == 2) {
-                strncpy(root_dev, dev, sizeof(root_dev) - 1);
-                root_dev[sizeof(root_dev) - 1] = '\0';
-                strncpy(root_fs, fs, sizeof(root_fs) - 1);
-                root_fs[sizeof(root_fs) - 1] = '\0';
-            }
-        }
-    }
 
     int mem_fd = raw_memfd_create("filtered", 0);
     if (mem_fd < 0) {
@@ -416,10 +450,6 @@ static int filter_file_lines(const char* path, ProcFilterType type) {
         if (!should_filter_line(type, pos)) {
             sanitize_mount_line(type, pos);
             raw_write(mem_fd, pos, line_len);
-        } else if (type == PROC_FILTER_MOUNTS && strstr(pos, " /system ") != nullptr) {
-            char root_mount[256];
-            snprintf(root_mount, sizeof(root_mount), "%s /system %s ro,seclabel,relatime 0 0\n", root_dev, root_fs);
-            raw_write(mem_fd, root_mount, strlen(root_mount));
         }
 
         pos[line_len] = saved;
@@ -535,7 +565,10 @@ static bool is_hidden_rom_prop(const char* name) {
         if (strcmp(name, *p) == 0) return true;
     }
     if (strstr(name, "lineage") != nullptr || strstr(name, "Lineage") != nullptr ||
-        strstr(name, "axion") != nullptr || strstr(name, "Axion") != nullptr) {
+        strstr(name, "axion") != nullptr || strstr(name, "Axion") != nullptr ||
+        strstr(name, "aospa") != nullptr || strstr(name, "proton") != nullptr ||
+        strstr(name, "omni") != nullptr || strstr(name, "pihooks") != nullptr ||
+        strstr(name, "pixelprops") != nullptr || strstr(name, "spoof.gms") != nullptr) {
         return true;
     }
     return false;
@@ -555,6 +588,11 @@ static const PropOverride kSpoofedValueProps[] = {
     {"persist.sys.usb.config", "mtp"},
     {"sys.usb.config", "mtp"},
     {"ro.build.flavor", "android-user"},
+    {"ro.boot.flash.locked", "1"},
+    {"ro.boot.verifiedbootstate", "green"},
+    {"ro.boot.vbmeta.device_state", "locked"},
+    {"ro.boot.veritymode", "enforcing"},
+    {"sys.oem_unlock_allowed", "0"},
     {nullptr, nullptr}
 };
 
@@ -590,18 +628,57 @@ const char* custom_rom_hide_get_prop_override(const char* name) {
     return nullptr;
 }
 
-bool custom_rom_hide_should_block_exec(const char* name, char* const* argv) {
-    if (!is_app_process()) return false;
-    if (!name) return false;
+void custom_rom_hide_spoof_statfs(const char* path, struct statfs* result) {
+    if (!result || !is_app_process()) return;
 
-    const char* base = path_basename(name);
-    if (strcmp(base, "su") == 0) return true;
+    if (static_cast<unsigned long>(result->f_type) == OVERLAYFS_SUPER_MAGIC) {
+        result->f_type = EXT4_SUPER_MAGIC;
+        result->f_flags |= ST_RDONLY;
+    }
 
-    if (strcmp(base, "which") == 0 && argv) {
-        for (int i = 1; argv[i] != nullptr; ++i) {
-            if (strcmp(argv[i], "su") == 0) return true;
+    if (!path) return;
+
+    for (const char* const* sp = kSystemPartitions; *sp; ++sp) {
+        if (starts_with(path, *sp)) {
+            result->f_flags |= ST_RDONLY;
+            return;
         }
     }
 
-    return false;
+    if (starts_with(path, "/apex") || strstr(path, "/exe") != nullptr) {
+        result->f_flags |= ST_RDONLY;
+    }
+}
+
+void custom_rom_hide_spoof_fstatfs(int fd, struct statfs* result) {
+    if (!result || !is_app_process()) return;
+
+    if (static_cast<unsigned long>(result->f_type) == OVERLAYFS_SUPER_MAGIC) {
+        result->f_type = EXT4_SUPER_MAGIC;
+        result->f_flags |= ST_RDONLY;
+    }
+
+    char path[256];
+    if (fd >= 0 && resolve_fd_path(fd, path, sizeof(path))) {
+        custom_rom_hide_spoof_statfs(path, result);
+    }
+}
+
+extern "C" int custom_rom_hide_syscall_openat(int dirfd, const char* path) {
+    if (!path || path[0] != '/' || !is_app_process()) {
+        return -1;
+    }
+
+    int filtered_fd = custom_rom_hide_filter_proc(path);
+    if (filtered_fd >= 0) return filtered_fd;
+
+    filtered_fd = custom_rom_hide_filter_sepolicy(path);
+    if (filtered_fd >= 0) return filtered_fd;
+
+    if (custom_rom_hide_should_block_at(dirfd, path)) {
+        errno = ENOENT;
+        return -2;
+    }
+
+    return -1;
 }
