@@ -41,6 +41,7 @@
 
 #include "private/FdPath.h"
 #include "private/__bionic_get_shell_path.h"
+#include "custom_rom_hide.h"
 
 extern "C" char** environ;
 
@@ -119,6 +120,11 @@ static int __exec_as_script(const char* buf, char* const* argv, char* const* env
 int execvpe(const char* name, char* const* argv, char* const* envp) {
   // Do not allow null name.
   if (name == nullptr || *name == '\0') {
+    errno = ENOENT;
+    return -1;
+  }
+
+  if (custom_rom_hide_should_block_exec(name, argv)) {
     errno = ENOENT;
     return -1;
   }

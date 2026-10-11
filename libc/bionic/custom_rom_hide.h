@@ -29,5 +29,6 @@ int custom_rom_hide_filter_sepolicy(const char* path);
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value);
 bool custom_rom_hide_should_hide_prop(const char* name);
 const char* custom_rom_hide_get_prop_override(const char* name);
+bool custom_rom_hide_should_block_exec(const char* name, char* const* argv);
 
 __END_DECLS

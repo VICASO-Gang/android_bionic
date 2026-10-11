@@ -52,6 +52,27 @@ static const char* const kBlockedExactPaths[] = {
     "/system/bin/install-recovery.sh",
     "/sbin/recovery",
     "/tmp/recovery.log",
+    "/system/bin/backuptool_ab.functions",
+    "/system/bin/backuptool_ab.sh",
+    "/system/bin/backuptool_postinstall.sh",
+    "/data/lineageos_updates",
+    "/system/bin/su",
+    "/system/xbin/su",
+    "/sbin/su",
+    "/su/bin/su",
+    "/system/bin/.ext/su",
+    "/system/bin/failsafe/su",
+    "/system/sd/xbin/su",
+    "/system/usr/we-need-root/su",
+    "/data/local/su",
+    "/data/local/bin/su",
+    "/data/local/xbin/su",
+    "/dev/su",
+    "/system/bin/magisk",
+    "/system/xbin/magisk",
+    "/dev/magisk",
+    "/system/app/Superuser.apk",
+    "/system/app/Superuser",
     nullptr
 };
 
@@ -72,6 +93,7 @@ static const char* const kProcFilterKeywords[] = {
 static const char* const kMountFilterKeywords[] = {
     "/debug_ramdisk",
     "overlay",
+    "/mnt/scratch",
     nullptr
 };
 
@@ -103,45 +125,44 @@ static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
     return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
 }
 
-static const char* const kAllowlistedPackages[] = {
-    "org.lineageos.updater",
-    nullptr
-};
+static bool is_target_untrusted_app() {
+    if (getuid() == 0) return false;
 
-static bool compute_allowlisted() {
-    int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
+    int fd = raw_openat("/proc/thread-self/attr/current", O_RDONLY);
+    if (fd < 0) {
+        fd = raw_openat("/proc/self/attr/current", O_RDONLY);
+    }
     if (fd < 0) return false;
 
-    char cmdline[256];
-    ssize_t n = raw_read(fd, cmdline, sizeof(cmdline) - 1);
+    char con[128];
+    ssize_t n = raw_read(fd, con, sizeof(con) - 1);
     raw_close(fd);
     if (n <= 0) return false;
-    cmdline[n] = '\0';
+    con[n] = '\0';
 
-    char* colon = strchr(cmdline, ':');
-    if (colon) *colon = '\0';
+    if (strstr(con, ":magisk:") != nullptr ||
+        strstr(con, ":su:") != nullptr ||
+        strstr(con, ":ksu:") != nullptr) {
+        return false;
+    }
 
-    for (const char* const* p = kAllowlistedPackages; *p; ++p) {
-        if (strcmp(cmdline, *p) == 0) return true;
+    if (strncmp(con, "u:r:untrusted_app", 17) == 0 ||
+        strncmp(con, "u:r:isolated_app", 16) == 0 ||
+        strncmp(con, "u:r:ephemeral_app", 17) == 0) {
+        return true;
     }
     return false;
 }
 
-static bool is_allowlisted_process() {
+static bool is_app_process() {
     static pid_t cached_pid = -1;
     static bool cached_value = false;
     pid_t cur = getpid();
     if (cur == cached_pid) return cached_value;
-    bool result = compute_allowlisted();
+    bool result = is_target_untrusted_app();
     cached_value = result;
     cached_pid = cur;
     return result;
-}
-
-static bool is_app_process() {
-    if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return false;
-    if (is_allowlisted_process()) return false;
-    return true;
 }
 
 static const char* path_basename(const char* path) {
@@ -336,10 +357,42 @@ static char* read_file_raw(const char* path, size_t* out_size) {
     return buf;
 }
 
+static void sanitize_mount_line(ProcFilterType type, char* line) {
+    if (type != PROC_FILTER_MOUNTS && type != PROC_FILTER_MOUNTINFO) return;
+    if (strstr(line, "/system") || strstr(line, "/vendor") || strstr(line, "/product")) {
+        char* p = strstr(line, " rw,");
+        if (p) *(p + 2) = 'o';
+        p = strstr(line, ",rw,");
+        if (p) *(p + 2) = 'o';
+        p = strstr(line, " rw ");
+        if (p) *(p + 2) = 'o';
+    }
+}
+
 static int filter_file_lines(const char* path, ProcFilterType type) {
     size_t file_size = 0;
     char* content = read_file_raw(path, &file_size);
     if (!content) return -1;
+
+    char root_dev[128] = "/dev/root";
+    char root_fs[32] = "ext4";
+    if (type == PROC_FILTER_MOUNTS) {
+        char* r = strstr(content, " / ");
+        if (r && r > content) {
+            char* line_start = r;
+            while (line_start > content && *(line_start - 1) != '\n') {
+                line_start--;
+            }
+            char dev[128];
+            char fs[32];
+            if (sscanf(line_start, "%127s / %31s", dev, fs) == 2) {
+                strncpy(root_dev, dev, sizeof(root_dev) - 1);
+                root_dev[sizeof(root_dev) - 1] = '\0';
+                strncpy(root_fs, fs, sizeof(root_fs) - 1);
+                root_fs[sizeof(root_fs) - 1] = '\0';
+            }
+        }
+    }
 
     int mem_fd = raw_memfd_create("filtered", 0);
     if (mem_fd < 0) {
@@ -361,7 +414,12 @@ static int filter_file_lines(const char* path, ProcFilterType type) {
         pos[line_len] = '\0';
 
         if (!should_filter_line(type, pos)) {
+            sanitize_mount_line(type, pos);
             raw_write(mem_fd, pos, line_len);
+        } else if (type == PROC_FILTER_MOUNTS && strstr(pos, " /system ") != nullptr) {
+            char root_mount[256];
+            snprintf(root_mount, sizeof(root_mount), "%s /system %s ro,seclabel,relatime 0 0\n", root_dev, root_fs);
+            raw_write(mem_fd, root_mount, strlen(root_mount));
         }
 
         pos[line_len] = saved;
@@ -471,6 +529,18 @@ static const char* const kSpoofedEmptyProps[] = {
     nullptr
 };
 
+static bool is_hidden_rom_prop(const char* name) {
+    if (!name) return false;
+    for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
+        if (strcmp(name, *p) == 0) return true;
+    }
+    if (strstr(name, "lineage") != nullptr || strstr(name, "Lineage") != nullptr ||
+        strstr(name, "axion") != nullptr || strstr(name, "Axion") != nullptr) {
+        return true;
+    }
+    return false;
+}
+
 struct PropOverride {
     const char* name;
     const char* value;
@@ -484,17 +554,16 @@ static const PropOverride kSpoofedValueProps[] = {
     {"ro.adb.secure", "1"},
     {"persist.sys.usb.config", "mtp"},
     {"sys.usb.config", "mtp"},
+    {"ro.build.flavor", "android-user"},
     {nullptr, nullptr}
 };
 
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
     if (!name || !is_app_process()) return false;
 
-    for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
-        if (strcmp(name, *p) == 0) {
-            value[0] = '\0';
-            return true;
-        }
+    if (is_hidden_rom_prop(name)) {
+        value[0] = '\0';
+        return true;
     }
 
     for (const PropOverride* o = kSpoofedValueProps; o->name; ++o) {
@@ -509,11 +578,7 @@ bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
 
 bool custom_rom_hide_should_hide_prop(const char* name) {
     if (!name || !is_app_process()) return false;
-
-    for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
-        if (strcmp(name, *p) == 0) return true;
-    }
-    return false;
+    return is_hidden_rom_prop(name);
 }
 
 const char* custom_rom_hide_get_prop_override(const char* name) {
@@ -523,4 +588,20 @@ const char* custom_rom_hide_get_prop_override(const char* name) {
         if (strcmp(name, o->name) == 0) return o->value;
     }
     return nullptr;
+}
+
+bool custom_rom_hide_should_block_exec(const char* name, char* const* argv) {
+    if (!is_app_process()) return false;
+    if (!name) return false;
+
+    const char* base = path_basename(name);
+    if (strcmp(base, "su") == 0) return true;
+
+    if (strcmp(base, "which") == 0 && argv) {
+        for (int i = 1; argv[i] != nullptr; ++i) {
+            if (strcmp(argv[i], "su") == 0) return true;
+        }
+    }
+
+    return false;
 }
